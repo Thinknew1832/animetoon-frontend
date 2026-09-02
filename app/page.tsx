@@ -170,11 +170,16 @@ export default function AnimeToonApp() {
 
     // Orientation lock for mobile landscape
     art.on('fullscreen', (state: boolean) => {
-      if (state && screen.orientation && (screen.orientation as any).lock) {
-        (screen.orientation as any).lock('landscape').catch(() => {});
-      } else if (!state && screen.orientation && screen.orientation.unlock) {
-        screen.orientation.unlock().catch(() => {});
-      }
+      try {
+  if (state && screen.orientation && (screen.orientation as any).lock) {
+    (screen.orientation as any).lock('landscape').catch(() => {});
+  } else if (!state && screen.orientation && screen.orientation.unlock) {
+    (screen.orientation.unlock as any)();
+  }
+} catch (e) {
+  // Ignore orientation errors on unsupported devices
+}
+
     });
 
     artInstance.current = art;
