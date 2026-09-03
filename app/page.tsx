@@ -16,6 +16,11 @@ interface AnimeEpisode {
   msg_id: string;
 }
 
+interface AudioTrack {
+  id: number;
+  title: string;
+}
+
 declare global {
   interface Window {
     Artplayer: any;
@@ -28,6 +33,8 @@ export default function NetflixAnimeApp() {
   const [selectedAnimeId, setSelectedAnimeId] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<string>('1');
   const [currentEpisode, setCurrentEpisode] = useState<AnimeEpisode | null>(null);
+  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
+  const [activeTrackId, setActiveTrackId] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -37,7 +44,6 @@ export default function NetflixAnimeApp() {
   const streamServer = (process.env.NEXT_PUBLIC_STREAM_SERVER || 'https://telegram-stream-server-vglf.onrender.com').replace(/\/$/, '');
   const csvUrl = process.env.NEXT_PUBLIC_SHEET_CSV_URL || '';
 
-  // Synchronize Mobile Gesture / Hardware Back Button
   const navigateTo = (view: 'home' | 'details' | 'watch', push = true) => {
     setCurrentView(view);
     if (push) {
@@ -60,7 +66,6 @@ export default function NetflixAnimeApp() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Fetch Google Sheet Catalog
   useEffect(() => {
     if (!csvUrl) {
       setLoading(false);
@@ -164,7 +169,7 @@ export default function NetflixAnimeApp() {
     );
   }, [animeList, searchQuery]);
 
-  // Video Player Mount & Audio Track Setup
+  // Load Audio Tracks and Mount Player
   useEffect(() => {
     if (currentView !== 'watch' || !currentEpisode || !playerRef.current) return;
 
@@ -173,18 +178,22 @@ export default function NetflixAnimeApp() {
       artInstance.current = null;
     }
 
-    const defaultStreamUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=0`;
+    setActiveTrackId(0);
 
-    // Fetch Audio Tracks from Render Engine
     fetch(`${streamServer}/api/tracks/${currentEpisode.msg_id}`)
       .then((res) => res.json())
-      .then((trackData) => {
-        const audioTracks = trackData.tracks || [{ id: 0, title: 'Default Audio' }];
+      .then((meta) => {
+        const tracks: AudioTrack[] = meta.tracks && meta.tracks.length > 0
+          ? meta.tracks
+          : [{ id: 0, title: 'Default Audio' }];
+        setAudioTracks(tracks);
+
+        const initialUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=0`;
 
         if (window.Artplayer && playerRef.current) {
           artInstance.current = new window.Artplayer({
             container: playerRef.current,
-            url: defaultStreamUrl,
+            url: initialUrl,
             type: 'mp4',
             volume: 0.8,
             autoplay: true,
@@ -196,35 +205,25 @@ export default function NetflixAnimeApp() {
             fullscreen: true,
             fullscreenWeb: true,
             theme: '#E50914',
-            settings: [
-              {
-                width: 200,
-                html: 'Audio Track',
-                tooltip: audioTracks[0]?.title || 'Default',
-                selector: audioTracks.map((t: any, index: number) => ({
-                  default: index === 0,
-                  html: t.title,
-                  trackId: t.id,
-                })),
-                onSelect: (item: any) => {
-                  if (!artInstance.current) return item.html;
-                  const currentTime = Math.floor(artInstance.current.currentTime || 0);
-                  const newTrackUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${item.trackId}&ss=${currentTime}`;
-                  artInstance.current.switchUrl(newTrackUrl).then(() => {
-                    artInstance.current.play();
-                  });
-                  return item.html;
-                },
-              },
-            ],
+          });
+
+          // Custom seek interceptor for FFmpeg streams
+          artInstance.current.on('seek', (currentTime: number) => {
+            const rounded = Math.floor(currentTime);
+            const seekUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${activeTrackId}&ss=${rounded}`;
+            artInstance.current.switchUrl(seekUrl).then(() => {
+              artInstance.current.play();
+            });
           });
         }
       })
       .catch(() => {
+        setAudioTracks([{ id: 0, title: 'Default Audio' }]);
+        const initialUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=0`;
         if (window.Artplayer && playerRef.current) {
           artInstance.current = new window.Artplayer({
             container: playerRef.current,
-            url: defaultStreamUrl,
+            url: initialUrl,
             type: 'mp4',
             volume: 0.8,
             autoplay: true,
@@ -246,6 +245,17 @@ export default function NetflixAnimeApp() {
       }
     };
   }, [currentView, currentEpisode, streamServer]);
+
+  // Audio Switcher Handler
+  const handleSwitchAudio = (trackId: number) => {
+    if (!currentEpisode || !artInstance.current) return;
+    setActiveTrackId(trackId);
+    const currentTime = Math.floor(artInstance.current.currentTime || 0);
+    const newTrackUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${trackId}&ss=${currentTime}`;
+    artInstance.current.switchUrl(newTrackUrl).then(() => {
+      artInstance.current.play();
+    });
+  };
 
   if (loading) {
     return (
@@ -276,7 +286,7 @@ export default function NetflixAnimeApp() {
         .hero-title { font-size: 24px; font-weight: 800; margin: 8px 0 6px 0; line-height: 1.2; text-shadow: 0 2px 10px rgba(0,0,0,0.8); }
         .hero-btn { display: inline-flex; align-items: center; gap: 8px; background: #fff; color: #000; border: none; padding: 8px 18px; border-radius: 4px; font-weight: 700; font-size: 14px; cursor: pointer; margin-top: 10px; }
 
-        /* CATALOG */
+        /* GRID */
         .catalog { padding: 16px; }
         .section-title { font-size: 16px; font-weight: 800; color: #fff; border-left: 3px solid #E50914; padding-left: 8px; margin-bottom: 12px; }
         .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
@@ -309,9 +319,12 @@ export default function NetflixAnimeApp() {
         /* WATCH SCREEN */
         .player-screen { padding: 60px 14px 20px; max-width: 900px; margin: 0 auto; }
         .player-container { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; margin: 12px 0; box-shadow: 0 10px 30px rgba(0,0,0,0.8); }
+        .audio-track-container { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0; margin-bottom: 12px; }
+        .audio-track-btn { background: #222; border: 1px solid #444; color: #ddd; padding: 6px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+        .audio-track-btn.active { background: #E50914; border-color: #E50914; color: #fff; }
       `}</style>
 
-      {/* Top Navbar */}
+      {/* Navigation */}
       <nav className="nav-bar">
         <span className="brand" onClick={() => navigateTo('home')}>AnimeToon</span>
         {currentView === 'home' && (
@@ -384,7 +397,7 @@ export default function NetflixAnimeApp() {
         </>
       )}
 
-      {/* VIEW 2: SERIES DETAILS & SEASONS */}
+      {/* VIEW 2: DETAILS */}
       {currentView === 'details' && activeAnime && (
         <div>
           <div className="details-hero">
@@ -446,6 +459,24 @@ export default function NetflixAnimeApp() {
           <div className="player-container">
             <div ref={playerRef} style={{ width: '100%', height: '100%' }} />
           </div>
+
+          {/* Audio Tracks Row */}
+          {audioTracks.length > 1 && (
+            <div>
+              <div style={{ fontSize: '12px', fontWeight: '700', color: '#aaa', margin: '8px 0 4px 0' }}>AUDIO LANGUAGE</div>
+              <div className="audio-track-container">
+                {audioTracks.map((t) => (
+                  <button
+                    key={t.id}
+                    className={`audio-track-btn ${activeTrackId === t.id ? 'active' : ''}`}
+                    onClick={() => handleSwitchAudio(t.id)}
+                  >
+                    🔊 {t.title}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div style={{ marginTop: '10px' }}>
             <span style={{ color: '#E50914', fontSize: '11px', fontWeight: 'bold' }}>NOW STREAMING</span>
