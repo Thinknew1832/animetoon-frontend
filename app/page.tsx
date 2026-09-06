@@ -42,25 +42,48 @@ export default function NetflixAnimeApp() {
 
   const playerRef = useRef<HTMLDivElement>(null);
   const artInstance = useRef<any>(null);
+  const playbackTimeRef = useRef<number>(0);
 
   const streamServer = (process.env.NEXT_PUBLIC_STREAM_SERVER || 'https://telegram-stream-server-vglf.onrender.com').replace(/\/$/, '');
   const csvUrl = process.env.NEXT_PUBLIC_SHEET_CSV_URL || '';
 
-  // Synchronize Mobile Hardware & Gesture Back Button
-  const navigateTo = (view: 'home' | 'details' | 'watch', push = true) => {
+  // Mobile Hardware & Gesture Back Button Integration
+  const navigateTo = (view: 'home' | 'details' | 'watch', extraState: any = {}, push = true) => {
     setCurrentView(view);
     if (push) {
-      window.history.pushState({ view }, '', '');
+      window.history.pushState({ view, ...extraState }, '', '');
     }
   };
 
   useEffect(() => {
+    // Initial home state
     window.history.replaceState({ view: 'home' }, '', '');
 
     const handlePopState = (event: PopStateEvent) => {
-      if (event.state && event.state.view) {
-        setCurrentView(event.state.view);
+      const state = event.state;
+      if (state && state.view) {
+        if (state.view === 'details') {
+          if (artInstance.current) {
+            artInstance.current.destroy(false);
+            artInstance.current = null;
+          }
+          if (state.animeId) setSelectedAnimeId(state.animeId);
+          if (state.season) setSelectedSeason(state.season);
+          setCurrentView('details');
+        } else if (state.view === 'watch') {
+          setCurrentView('watch');
+        } else {
+          if (artInstance.current) {
+            artInstance.current.destroy(false);
+            artInstance.current = null;
+          }
+          setCurrentView('home');
+        }
       } else {
+        if (artInstance.current) {
+          artInstance.current.destroy(false);
+          artInstance.current = null;
+        }
         setCurrentView('home');
       }
     };
@@ -179,23 +202,17 @@ export default function NetflixAnimeApp() {
     setActiveTrackId(trackId);
 
     const art = artInstance.current;
-    const currentTime = art.currentTime || 0;
-    const isPaused = art.video ? art.video.paused : false;
+    const currentTime = Math.floor(art.currentTime || playbackTimeRef.current || 0);
+    playbackTimeRef.current = currentTime;
 
-    // Direct track switch without forced ss fragments to preserve timeline
-    const newTrackUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${trackId}`;
+    // Fast-seek to current second with chosen audio track
+    const newTrackUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${trackId}&ss=${currentTime}`;
 
     art.switchUrl(newTrackUrl).then(() => {
-      art.currentTime = currentTime;
-      if (!isPaused) {
-        art.play().catch(() => {});
-      }
+      art.play().catch(() => {});
     }).catch(() => {
       art.url = newTrackUrl;
-      art.currentTime = currentTime;
-      if (!isPaused) {
-        art.play().catch(() => {});
-      }
+      art.play().catch(() => {});
     });
   };
 
@@ -209,6 +226,7 @@ export default function NetflixAnimeApp() {
     }
 
     setActiveTrackId(0);
+    playbackTimeRef.current = 0;
 
     fetch(`${streamServer}/api/tracks/${currentEpisode.msg_id}`)
       .then((res) => res.json())
@@ -221,7 +239,7 @@ export default function NetflixAnimeApp() {
         const initialUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=0`;
 
         if (window.Artplayer && playerRef.current) {
-          artInstance.current = new window.Artplayer({
+          const art = new window.Artplayer({
             container: playerRef.current,
             url: initialUrl,
             type: 'mp4',
@@ -252,6 +270,31 @@ export default function NetflixAnimeApp() {
               },
             ],
           });
+
+          // Continuously track playback position
+          art.on('video:timeupdate', () => {
+            if (art.currentTime > 0) {
+              playbackTimeRef.current = Math.floor(art.currentTime);
+            }
+          });
+
+          // Handle Pause without Reset
+          art.on('video:pause', () => {
+            if (art.currentTime > 0) {
+              playbackTimeRef.current = Math.floor(art.currentTime);
+            }
+          });
+
+          // Auto-recover from Render timeouts during pause
+          art.on('video:ended', () => {
+            // If ended early (not at the end of the ~24 min episode), auto-resume
+            if (playbackTimeRef.current > 5 && meta.duration && playbackTimeRef.current < (meta.duration - 30)) {
+              const resumeUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${activeTrackId}&ss=${playbackTimeRef.current}`;
+              art.switchUrl(resumeUrl).then(() => art.play().catch(() => {}));
+            }
+          });
+
+          artInstance.current = art;
         }
       })
       .catch(() => {
@@ -383,7 +426,6 @@ export default function NetflixAnimeApp() {
       {/* ============================================================ */}
       {currentView === 'home' && (
         <div>
-          {/* Header */}
           <header className="netflix-header">
             <div className="netflix-top-row">
               <div className="menu-icon">
@@ -395,7 +437,6 @@ export default function NetflixAnimeApp() {
               <div className="profile-avatar">A</div>
             </div>
 
-            {/* Sub-nav Tabs */}
             <nav className="subnav-tabs">
               <span
                 className={`subnav-item ${activeCategory === 'all' ? 'active' : ''}`}
@@ -424,7 +465,6 @@ export default function NetflixAnimeApp() {
             </nav>
           </header>
 
-          {/* Elevated 3D Billboard Card */}
           {featured && (
             <div className="billboard-container">
               <div
@@ -432,7 +472,7 @@ export default function NetflixAnimeApp() {
                 onClick={() => {
                   setSelectedAnimeId(featured.anime_id);
                   setSelectedSeason('1');
-                  navigateTo('details');
+                  navigateTo('details', { animeId: featured.anime_id, season: '1' });
                 }}
               >
                 <img
@@ -450,7 +490,6 @@ export default function NetflixAnimeApp() {
             </div>
           )}
 
-          {/* Shelf Grid */}
           <section className="shelf">
             <h2 className="shelf-title">Popular Anime</h2>
             <div className="shelf-grid">
@@ -461,7 +500,7 @@ export default function NetflixAnimeApp() {
                   onClick={() => {
                     setSelectedAnimeId(item.info.anime_id);
                     setSelectedSeason('1');
-                    navigateTo('details');
+                    navigateTo('details', { animeId: item.info.anime_id, season: '1' });
                   }}
                 >
                   <img
@@ -483,7 +522,6 @@ export default function NetflixAnimeApp() {
       {/* ============================================================ */}
       {currentView === 'details' && activeAnime && (
         <div className="detail-sheet">
-          {/* Ambient Blurred Background */}
           <div className="sheet-ambient-bg">
             <img
               src={activeAnime.info.banner || activeAnime.info.poster}
@@ -492,13 +530,11 @@ export default function NetflixAnimeApp() {
             />
           </div>
 
-          {/* Close Button */}
           <button className="close-circle-btn" onClick={() => window.history.back()}>
             ✕
           </button>
 
           <div className="sheet-content">
-            {/* Centered Poster Box */}
             <div className="sheet-poster-box">
               <img
                 src={activeAnime.info.poster || activeAnime.info.banner}
@@ -506,32 +542,28 @@ export default function NetflixAnimeApp() {
               />
             </div>
 
-            {/* Top 10 Badge */}
             <div className="rank-tag-row">
               <div className="top10-box">TOP<br />10</div>
               <span className="rank-text">#1 in Anime Series Today</span>
             </div>
 
-            {/* Full-width Play Button */}
             <button
               className="play-primary-btn"
               onClick={() => {
                 if (seasonEpisodes.length > 0) {
                   setCurrentEpisode(seasonEpisodes[0]);
-                  navigateTo('watch');
+                  navigateTo('watch', { animeId: activeAnime.info.anime_id, season: selectedSeason });
                 }
               }}
             >
               ▶ Play
             </button>
 
-            {/* Synopsis */}
             <p className="sheet-synopsis">
               {activeAnime.info.genres} • Released {activeAnime.info.year} • Rating: ★ {activeAnime.info.rating}.
               Join the adventure as unexpected powers reshape fates in this acclaimed seasonal hit.
             </p>
 
-            {/* Action Bar */}
             <div className="actions-row">
               <div className="action-col">
                 <span className="action-icon">+</span>
@@ -547,7 +579,6 @@ export default function NetflixAnimeApp() {
               </div>
             </div>
 
-            {/* Sub-tabs */}
             <div className="detail-tabs-header">
               <button
                 className={`detail-tab-btn ${detailTab === 'episodes' ? 'active' : ''}`}
@@ -569,7 +600,6 @@ export default function NetflixAnimeApp() {
               </button>
             </div>
 
-            {/* Season Selector */}
             {detailTab === 'episodes' && (
               <>
                 <select
@@ -584,7 +614,6 @@ export default function NetflixAnimeApp() {
                   ))}
                 </select>
 
-                {/* Episode Cards */}
                 <div className="ep-list-container">
                   {seasonEpisodes.map((ep) => (
                     <div
@@ -592,7 +621,7 @@ export default function NetflixAnimeApp() {
                       className="ep-item"
                       onClick={() => {
                         setCurrentEpisode(ep);
-                        navigateTo('watch');
+                        navigateTo('watch', { animeId: activeAnime.info.anime_id, season: selectedSeason, epId: ep.msg_id });
                       }}
                     >
                       <div className="ep-thumbnail-wrapper">
@@ -636,10 +665,13 @@ export default function NetflixAnimeApp() {
               background: 'none',
               border: 'none',
               color: '#fff',
-              fontSize: '13px',
+              fontSize: '14px',
               fontWeight: 700,
               cursor: 'pointer',
               marginBottom: '10px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
             }}
             onClick={() => window.history.back()}
           >
