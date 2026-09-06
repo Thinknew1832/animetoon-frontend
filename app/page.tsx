@@ -173,7 +173,7 @@ export default function NetflixAnimeApp() {
     );
   }, [animeList, searchQuery]);
 
-    // Switch Audio Track helper (called by buttons AND gear settings menu)
+    //   // Switch Audio Track helper (hooked to the Gear icon menu)
   const switchAudioTrack = (trackId: number) => {
     if (!currentEpisode || !artInstance.current) return;
     setActiveTrackId(trackId);
@@ -182,22 +182,22 @@ export default function NetflixAnimeApp() {
     const currentTime = art.currentTime || 0;
     const isPaused = art.video ? art.video.paused : false;
 
+    // Stream the full file with the chosen track
     const newTrackUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${trackId}`;
 
     art.switchUrl(newTrackUrl).then(() => {
       art.currentTime = currentTime;
       if (!isPaused) {
-        art.play();
+        art.play().catch(() => {});
       }
     }).catch(() => {
       art.url = newTrackUrl;
       art.currentTime = currentTime;
       if (!isPaused) {
-        art.play();
+        art.play().catch(() => {});
       }
     });
   };
-
   // Video Player Mount & Gear Icon Settings Setup
   useEffect(() => {
     if (currentView !== 'watch' || !currentEpisode || !playerRef.current) return;
@@ -652,7 +652,7 @@ export default function NetflixAnimeApp() {
             <div ref={playerRef} style={{ width: '100%', height: '100%' }} />
           </div>
 
-          {/* Audio Tracks Row */}
+                    {/* Audio Tracks Row */}
           {audioTracks.length > 1 && (
             <div>
               <div style={{ fontSize: '11px', fontWeight: 800, color: '#888', margin: '8px 0 4px 0', textTransform: 'uppercase' }}>
