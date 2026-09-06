@@ -69,7 +69,7 @@ export default function NetflixAnimeApp() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Fetch Catalog from Google Sheet
+  // Fetch Catalog from Google Sheet CSV
   useEffect(() => {
     if (!csvUrl) {
       setLoading(false);
@@ -173,7 +173,7 @@ export default function NetflixAnimeApp() {
     );
   }, [animeList, searchQuery]);
 
-    //   // Switch Audio Track helper (hooked to the Gear icon menu)
+  // Audio Switcher Handler (Called via Gear Icon Menu)
   const switchAudioTrack = (trackId: number) => {
     if (!currentEpisode || !artInstance.current) return;
     setActiveTrackId(trackId);
@@ -182,7 +182,7 @@ export default function NetflixAnimeApp() {
     const currentTime = art.currentTime || 0;
     const isPaused = art.video ? art.video.paused : false;
 
-    // Stream the full file with the chosen track
+    // Direct track switch without forced ss fragments to preserve timeline
     const newTrackUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${trackId}`;
 
     art.switchUrl(newTrackUrl).then(() => {
@@ -198,6 +198,7 @@ export default function NetflixAnimeApp() {
       }
     });
   };
+
   // Video Player Mount & Gear Icon Settings Setup
   useEffect(() => {
     if (currentView !== 'watch' || !currentEpisode || !playerRef.current) return;
@@ -297,7 +298,7 @@ export default function NetflixAnimeApp() {
         * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
         body { background-color: #000; overflow-x: hidden; }
 
-        /* NETFLIX TOP BAR (IMAGE 1) */
+        /* NETFLIX TOP BAR */
         .netflix-header { position: sticky; top: 0; left: 0; right: 0; z-index: 100; background: #000; padding: 12px 16px 8px; }
         .netflix-top-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
         .menu-icon { width: 24px; height: 18px; display: flex; flex-direction: column; justify-content: space-between; cursor: pointer; }
@@ -311,7 +312,7 @@ export default function NetflixAnimeApp() {
         .subnav-item.active { color: #fff; }
         .subnav-item.active::after { content: ''; position: absolute; bottom: -4px; left: 10%; width: 80%; height: 2.5px; background: #fff; border-radius: 2px; }
 
-        /* 3D BILLBOARD CARD (IMAGE 1) */
+        /* 3D BILLBOARD CARD */
         .billboard-container { padding: 14px 16px 20px; display: flex; justify-content: center; }
         .billboard-card { position: relative; width: 100%; max-width: 480px; aspect-ratio: 4/5; border-radius: 12px; overflow: hidden; box-shadow: 0 12px 36px rgba(0,0,0,0.9); cursor: pointer; border: 1px solid rgba(255,255,255,0.1); }
         .billboard-img { width: 100%; height: 100%; object-fit: cover; }
@@ -331,7 +332,7 @@ export default function NetflixAnimeApp() {
         .poster-img { width: 100%; aspect-ratio: 2/3; object-fit: cover; display: block; }
         .poster-title { font-size: 11px; font-weight: 600; padding: 6px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-        /* DETAIL MODAL / SHEET (IMAGE 2) */
+        /* DETAIL MODAL / SHEET */
         .detail-sheet { position: relative; min-height: 100vh; background-color: #000; padding-bottom: 40px; }
         .sheet-ambient-bg { position: absolute; top: 0; left: 0; right: 0; height: 380px; overflow: hidden; z-index: 1; }
         .sheet-ambient-img { width: 100%; height: 100%; object-fit: cover; filter: blur(35px) brightness(0.4); transform: scale(1.2); }
@@ -348,12 +349,12 @@ export default function NetflixAnimeApp() {
         .play-primary-btn { width: 100%; max-width: 440px; background: #E50914; color: #fff; border: none; padding: 12px; border-radius: 6px; font-size: 15px; font-weight: 800; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; margin-bottom: 14px; }
         .sheet-synopsis { font-size: 12px; line-height: 1.5; color: #ccc; text-align: left; width: 100%; max-width: 440px; margin-bottom: 16px; }
 
-        /* ACTION BUTTONS (MY LIST, RATE, SHARE) */
+        /* ACTION BUTTONS */
         .actions-row { display: flex; justify-content: space-around; width: 100%; max-width: 360px; margin-bottom: 20px; border-bottom: 1px solid #222; padding-bottom: 16px; }
         .action-col { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 10px; color: #aaa; cursor: pointer; font-weight: 600; }
         .action-icon { font-size: 18px; color: #fff; }
 
-        /* DETAIL TABS (EPISODES, TRAILERS, MORE) */
+        /* DETAIL TABS */
         .detail-tabs-header { display: flex; width: 100%; max-width: 440px; border-bottom: 2px solid #222; margin-bottom: 14px; }
         .detail-tab-btn { flex: 1; padding: 8px 0; background: none; border: none; font-size: 12px; font-weight: 800; color: #777; cursor: pointer; text-transform: uppercase; position: relative; }
         .detail-tab-btn.active { color: #fff; }
@@ -361,7 +362,7 @@ export default function NetflixAnimeApp() {
 
         .season-dropdown { align-self: flex-start; background: #1c1c1c; border: 1px solid #333; color: #fff; padding: 6px 12px; border-radius: 4px; font-size: 12px; font-weight: 700; margin-bottom: 14px; outline: none; }
 
-        /* EPISODE ROW ITEMS */
+        /* EPISODE ROWS */
         .ep-list-container { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 14px; }
         .ep-item { display: flex; gap: 12px; align-items: center; background: #141414; border-radius: 6px; padding: 8px; cursor: pointer; }
         .ep-item:hover { background: #1c1c1c; }
@@ -375,13 +376,10 @@ export default function NetflixAnimeApp() {
         /* WATCH SCREEN */
         .player-screen { padding: 16px; max-width: 900px; margin: 0 auto; }
         .player-container { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; margin: 12px 0; }
-        .audio-track-container { display: flex; gap: 8px; overflow-x: auto; padding: 6px 0 12px; }
-        .audio-track-btn { background: #1c1c1c; border: 1px solid #333; color: #ddd; padding: 6px 14px; border-radius: 4px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
-        .audio-track-btn.active { background: #E50914; border-color: #E50914; color: #fff; }
       `}</style>
 
       {/* ============================================================ */}
-      {/* 1. HOME SCREEN (IMAGE 1)                                    */}
+      {/* 1. HOME SCREEN                                              */}
       {/* ============================================================ */}
       {currentView === 'home' && (
         <div>
@@ -426,7 +424,7 @@ export default function NetflixAnimeApp() {
             </nav>
           </header>
 
-          {/* 3D Elevated Billboard Card */}
+          {/* Elevated 3D Billboard Card */}
           {featured && (
             <div className="billboard-container">
               <div
@@ -452,7 +450,7 @@ export default function NetflixAnimeApp() {
             </div>
           )}
 
-          {/* All Anime Grid */}
+          {/* Shelf Grid */}
           <section className="shelf">
             <h2 className="shelf-title">Popular Anime</h2>
             <div className="shelf-grid">
@@ -481,7 +479,7 @@ export default function NetflixAnimeApp() {
       )}
 
       {/* ============================================================ */}
-      {/* 2. ANIME DETAIL SCREEN (IMAGE 2)                           */}
+      {/* 2. ANIME DETAIL MODAL / SHEET                               */}
       {/* ============================================================ */}
       {currentView === 'details' && activeAnime && (
         <div className="detail-sheet">
@@ -651,26 +649,6 @@ export default function NetflixAnimeApp() {
           <div className="player-container">
             <div ref={playerRef} style={{ width: '100%', height: '100%' }} />
           </div>
-
-                    {/* Audio Tracks Row */}
-          {audioTracks.length > 1 && (
-            <div>
-              <div style={{ fontSize: '11px', fontWeight: 800, color: '#888', margin: '8px 0 4px 0', textTransform: 'uppercase' }}>
-                Audio Tracks
-              </div>
-              <div className="audio-track-container">
-                {audioTracks.map((t) => (
-                  <button
-                    key={t.id}
-                    className={`audio-track-btn ${activeTrackId === t.id ? 'active' : ''}`}
-                    onClick={() => switchAudioTrack(t.id)}
-                  >
-                    🔊 {t.title}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
 
           <div style={{ marginTop: '12px' }}>
             <span style={{ color: '#E50914', fontSize: '11px', fontWeight: 800, letterSpacing: '1px' }}>
