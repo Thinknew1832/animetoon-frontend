@@ -21,6 +21,13 @@ interface AudioTrack {
   title: string;
 }
 
+type ListStatus = 'plan' | 'watching' | 'onhold' | 'dropped' | 'completed';
+
+interface SavedAnimeItem {
+  anime_id: string;
+  status: ListStatus;
+}
+
 declare global {
   interface Window {
     Artplayer: any;
@@ -29,12 +36,14 @@ declare global {
 
 export default function NetflixAnimeApp() {
   const [data, setData] = useState<AnimeEpisode[]>([]);
-  const [currentView, setCurrentView] = useState<'home' | 'details' | 'watch'>('home');
+  const [currentView, setCurrentView] = useState<'home' | 'details' | 'watch' | 'mylist'>('home');
   const [selectedAnimeId, setSelectedAnimeId] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<string>('1');
   const [currentEpisode, setCurrentEpisode] = useState<AnimeEpisode | null>(null);
   const [activeCategory, setActiveCategory] = useState<'all' | 'tv' | 'movies' | 'mylist'>('all');
   const [detailTab, setDetailTab] = useState<'episodes' | 'trailers' | 'more'>('episodes');
+  const [myListFilter, setMyListFilter] = useState<ListStatus>('watching');
+  const [savedList, setSavedList] = useState<SavedAnimeItem[]>([]);
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
   const [activeTrackId, setActiveTrackId] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState('');
@@ -43,20 +52,59 @@ export default function NetflixAnimeApp() {
   const playerRef = useRef<HTMLDivElement>(null);
   const artInstance = useRef<any>(null);
   const playbackTimeRef = useRef<number>(0);
+  const totalDurationRef = useRef<number>(0);
 
   const streamServer = (process.env.NEXT_PUBLIC_STREAM_SERVER || 'https://telegram-stream-server-vglf.onrender.com').replace(/\/$/, '');
   const csvUrl = process.env.NEXT_PUBLIC_SHEET_CSV_URL || '';
 
-  // Mobile Hardware & Gesture Back Button Integration
-  const navigateTo = (view: 'home' | 'details' | 'watch', extraState: any = {}, push = true) => {
+  // Load Saved List from localStorage
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('animetoon_mylist');
+      if (stored) {
+        setSavedList(JSON.parse(stored));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  const saveToMyList = (animeId: string, status: ListStatus = 'watching') => {
+    setSavedList((prev) => {
+      const exists = prev.find((item) => item.anime_id === animeId);
+      let updated: SavedAnimeItem[];
+      if (exists) {
+        updated = prev.filter((item) => item.anime_id !== animeId);
+      } else {
+        updated = [...prev, { anime_id: animeId, status }];
+      }
+      localStorage.setItem('animetoon_mylist', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const updateAnimeStatus = (animeId: string, status: ListStatus) => {
+    setSavedList((prev) => {
+      const updated = prev.map((item) => (item.anime_id === animeId ? { ...item, status } : item));
+      localStorage.setItem('animetoon_mylist', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  // Synchronize Mobile Hardware & Gesture Back Button
+  const navigateTo = (view: 'home' | 'details' | 'watch' | 'mylist', extraState: any = {}, push = true) => {
     setCurrentView(view);
+    if (view === 'mylist') {
+      setActiveCategory('mylist');
+    } else if (view === 'home') {
+      setActiveCategory('all');
+    }
     if (push) {
       window.history.pushState({ view, ...extraState }, '', '');
     }
   };
 
   useEffect(() => {
-    // Initial home state
     window.history.replaceState({ view: 'home' }, '', '');
 
     const handlePopState = (event: PopStateEvent) => {
@@ -72,6 +120,8 @@ export default function NetflixAnimeApp() {
           setCurrentView('details');
         } else if (state.view === 'watch') {
           setCurrentView('watch');
+        } else if (state.view === 'mylist') {
+          setCurrentView('mylist');
         } else {
           if (artInstance.current) {
             artInstance.current.destroy(false);
@@ -196,7 +246,14 @@ export default function NetflixAnimeApp() {
     );
   }, [animeList, searchQuery]);
 
-  // Audio Switcher Handler (Called via Gear Icon Menu)
+  const myListAnime = useMemo(() => {
+    const idsInCurrentFilter = new Set(
+      savedList.filter((item) => item.status === myListFilter).map((item) => item.anime_id)
+    );
+    return animeList.filter((a) => idsInCurrentFilter.has(a.info.anime_id));
+  }, [animeList, savedList, myListFilter]);
+
+  // Audio Switcher Handler
   const switchAudioTrack = (trackId: number) => {
     if (!currentEpisode || !artInstance.current) return;
     setActiveTrackId(trackId);
@@ -205,7 +262,6 @@ export default function NetflixAnimeApp() {
     const currentTime = Math.floor(art.currentTime || playbackTimeRef.current || 0);
     playbackTimeRef.current = currentTime;
 
-    // Fast-seek to current second with chosen audio track
     const newTrackUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${trackId}&ss=${currentTime}`;
 
     art.switchUrl(newTrackUrl).then(() => {
@@ -216,7 +272,7 @@ export default function NetflixAnimeApp() {
     });
   };
 
-  // Video Player Mount & Gear Icon Settings Setup
+  // Video Player Mount & Settings Setup
   useEffect(() => {
     if (currentView !== 'watch' || !currentEpisode || !playerRef.current) return;
 
@@ -235,6 +291,9 @@ export default function NetflixAnimeApp() {
           ? meta.tracks
           : [{ id: 0, title: 'Default Audio' }];
         setAudioTracks(tracks);
+
+        const videoDuration = meta.duration && meta.duration > 0 ? meta.duration : 1440;
+        totalDurationRef.current = videoDuration;
 
         const initialUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=0`;
 
@@ -271,24 +330,37 @@ export default function NetflixAnimeApp() {
             ],
           });
 
-          // Continuously track playback position
+          // Inject Duration to lock timeline to full 24:00+
+          art.on('ready', () => {
+            if (art.video && totalDurationRef.current > 0) {
+              Object.defineProperty(art.video, 'duration', {
+                get: () => totalDurationRef.current,
+                configurable: true,
+              });
+            }
+          });
+
+          // Track playback progress
           art.on('video:timeupdate', () => {
             if (art.currentTime > 0) {
               playbackTimeRef.current = Math.floor(art.currentTime);
             }
           });
 
-          // Handle Pause without Reset
+          // Resume position upon pause/network drop
           art.on('video:pause', () => {
             if (art.currentTime > 0) {
               playbackTimeRef.current = Math.floor(art.currentTime);
             }
           });
 
-          // Auto-recover from Render timeouts during pause
+          // Stream stall recovery
           art.on('video:ended', () => {
-            // If ended early (not at the end of the ~24 min episode), auto-resume
-            if (playbackTimeRef.current > 5 && meta.duration && playbackTimeRef.current < (meta.duration - 30)) {
+            if (
+              playbackTimeRef.current > 5 &&
+              totalDurationRef.current > 0 &&
+              playbackTimeRef.current < totalDurationRef.current - 20
+            ) {
               const resumeUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${activeTrackId}&ss=${playbackTimeRef.current}`;
               art.switchUrl(resumeUrl).then(() => art.play().catch(() => {}));
             }
@@ -308,10 +380,6 @@ export default function NetflixAnimeApp() {
             volume: 0.8,
             autoplay: true,
             setting: true,
-            playbackRate: true,
-            aspectRatio: true,
-            fullscreen: true,
-            fullscreenWeb: true,
             theme: '#E50914',
           });
         }
@@ -334,6 +402,7 @@ export default function NetflixAnimeApp() {
   }
 
   const featured = animeList[0]?.info;
+  const isSavedInList = activeAnime ? savedList.some((i) => i.anime_id === activeAnime.info.anime_id) : false;
 
   return (
     <div style={{ backgroundColor: '#000', color: '#fff', minHeight: '100vh', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
@@ -349,7 +418,7 @@ export default function NetflixAnimeApp() {
         .netflix-logo { color: #E50914; font-size: 26px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; cursor: pointer; }
         .profile-avatar { width: 28px; height: 28px; border-radius: 4px; background: #E50914; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: bold; }
 
-        /* HORIZONTAL SUB-NAV TABS */
+        /* SUB-NAV TABS */
         .subnav-tabs { display: flex; justify-content: space-around; align-items: center; font-size: 13px; color: #aaa; font-weight: 600; padding-bottom: 6px; }
         .subnav-item { cursor: pointer; padding: 4px 6px; position: relative; transition: color 0.2s; }
         .subnav-item.active { color: #fff; }
@@ -392,12 +461,10 @@ export default function NetflixAnimeApp() {
         .play-primary-btn { width: 100%; max-width: 440px; background: #E50914; color: #fff; border: none; padding: 12px; border-radius: 6px; font-size: 15px; font-weight: 800; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; margin-bottom: 14px; }
         .sheet-synopsis { font-size: 12px; line-height: 1.5; color: #ccc; text-align: left; width: 100%; max-width: 440px; margin-bottom: 16px; }
 
-        /* ACTION BUTTONS */
         .actions-row { display: flex; justify-content: space-around; width: 100%; max-width: 360px; margin-bottom: 20px; border-bottom: 1px solid #222; padding-bottom: 16px; }
         .action-col { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 10px; color: #aaa; cursor: pointer; font-weight: 600; }
         .action-icon { font-size: 18px; color: #fff; }
 
-        /* DETAIL TABS */
         .detail-tabs-header { display: flex; width: 100%; max-width: 440px; border-bottom: 2px solid #222; margin-bottom: 14px; }
         .detail-tab-btn { flex: 1; padding: 8px 0; background: none; border: none; font-size: 12px; font-weight: 800; color: #777; cursor: pointer; text-transform: uppercase; position: relative; }
         .detail-tab-btn.active { color: #fff; }
@@ -405,7 +472,6 @@ export default function NetflixAnimeApp() {
 
         .season-dropdown { align-self: flex-start; background: #1c1c1c; border: 1px solid #333; color: #fff; padding: 6px 12px; border-radius: 4px; font-size: 12px; font-weight: 700; margin-bottom: 14px; outline: none; }
 
-        /* EPISODE ROWS */
         .ep-list-container { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 14px; }
         .ep-item { display: flex; gap: 12px; align-items: center; background: #141414; border-radius: 6px; padding: 8px; cursor: pointer; }
         .ep-item:hover { background: #1c1c1c; }
@@ -419,10 +485,24 @@ export default function NetflixAnimeApp() {
         /* WATCH SCREEN */
         .player-screen { padding: 16px; max-width: 900px; margin: 0 auto; }
         .player-container { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; margin: 12px 0; }
+
+        /* MY LIST PAGE (MATCHING IMAGE 64138) */
+        .mylist-screen { padding: 16px; min-height: 100vh; background-color: #000; }
+        .mylist-top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+        .mylist-title-row { display: flex; align-items: center; gap: 14px; }
+        .back-icon-btn { background: none; border: none; color: #fff; font-size: 22px; cursor: pointer; }
+        .mylist-heading { font-size: 22px; font-weight: 800; letter-spacing: 0.5px; }
+        .edit-icon { font-size: 20px; color: #fff; cursor: pointer; }
+
+        /* PILL FILTERS */
+        .pill-bar { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 12px; margin-bottom: 16px; scrollbar-width: none; }
+        .pill-bar::-webkit-scrollbar { display: none; }
+        .pill-btn { background: #1a1a1a; border: 1px solid #333; color: #bbb; padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer; transition: all 0.2s; }
+        .pill-btn.active { background: #333; color: #fff; border-color: #555; }
       `}</style>
 
       {/* ============================================================ */}
-      {/* 1. HOME SCREEN                                              */}
+      {/* 1. HOME SCREEN (IMAGE 64136)                                */}
       {/* ============================================================ */}
       {currentView === 'home' && (
         <div>
@@ -458,7 +538,7 @@ export default function NetflixAnimeApp() {
               </span>
               <span
                 className={`subnav-item ${activeCategory === 'mylist' ? 'active' : ''}`}
-                onClick={() => setActiveCategory('mylist')}
+                onClick={() => navigateTo('mylist')}
               >
                 My List
               </span>
@@ -565,9 +645,12 @@ export default function NetflixAnimeApp() {
             </p>
 
             <div className="actions-row">
-              <div className="action-col">
-                <span className="action-icon">+</span>
-                <span>My List</span>
+              <div
+                className="action-col"
+                onClick={() => saveToMyList(activeAnime.info.anime_id, 'watching')}
+              >
+                <span className="action-icon">{isSavedInList ? '✓' : '+'}</span>
+                <span>{isSavedInList ? 'Added' : 'My List'}</span>
               </div>
               <div className="action-col">
                 <span className="action-icon">👍</span>
@@ -656,7 +739,88 @@ export default function NetflixAnimeApp() {
       )}
 
       {/* ============================================================ */}
-      {/* 3. WATCH PLAYER SCREEN                                      */}
+      {/* 3. DEDICATED MY LIST SCREEN (IMAGE 64138)                   */}
+      {/* ============================================================ */}
+      {currentView === 'mylist' && (
+        <div className="mylist-screen">
+          <div className="mylist-top-bar">
+            <div className="mylist-title-row">
+              <button className="back-icon-btn" onClick={() => window.history.back()}>
+                ←
+              </button>
+              <h1 className="mylist-heading">My List</h1>
+            </div>
+            <span className="edit-icon">✎</span>
+          </div>
+
+          {/* Filter Pills */}
+          <div className="pill-bar">
+            <button
+              className={`pill-btn ${myListFilter === 'watching' ? 'active' : ''}`}
+              onClick={() => setMyListFilter('watching')}
+            >
+              Watching
+            </button>
+            <button
+              className={`pill-btn ${myListFilter === 'plan' ? 'active' : ''}`}
+              onClick={() => setMyListFilter('plan')}
+            >
+              Plan to Watch
+            </button>
+            <button
+              className={`pill-btn ${myListFilter === 'onhold' ? 'active' : ''}`}
+              onClick={() => setMyListFilter('onhold')}
+            >
+              On Hold
+            </button>
+            <button
+              className={`pill-btn ${myListFilter === 'dropped' ? 'active' : ''}`}
+              onClick={() => setMyListFilter('dropped')}
+            >
+              Dropped
+            </button>
+            <button
+              className={`pill-btn ${myListFilter === 'completed' ? 'active' : ''}`}
+              onClick={() => setMyListFilter('completed')}
+            >
+              Completed
+            </button>
+          </div>
+
+          {/* Grid of Saved Anime */}
+          {myListAnime.length === 0 ? (
+            <div style={{ textAlign: 'center', color: '#666', marginTop: '60px', fontSize: '14px' }}>
+              No anime in this category yet.<br />
+              Tap <b>+ My List</b> on any title to save it here.
+            </div>
+          ) : (
+            <div className="shelf-grid">
+              {myListAnime.map((item) => (
+                <div
+                  key={item.info.anime_id}
+                  className="poster-card"
+                  onClick={() => {
+                    setSelectedAnimeId(item.info.anime_id);
+                    setSelectedSeason('1');
+                    navigateTo('details', { animeId: item.info.anime_id, season: '1' });
+                  }}
+                >
+                  <img
+                    src={item.info.poster || item.info.banner}
+                    alt={item.info.title}
+                    className="poster-img"
+                    loading="lazy"
+                  />
+                  <p className="poster-title">{item.info.title}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* 4. WATCH PLAYER SCREEN                                      */}
       {/* ============================================================ */}
       {currentView === 'watch' && currentEpisode && (
         <div className="player-screen">
