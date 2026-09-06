@@ -234,17 +234,19 @@ export default function NetflixAnimeApp() {
     };
   }, [currentView, currentEpisode, streamServer]);
 
-    const handleSwitchAudio = (trackId: number) => {
+      const handleSwitchAudio = (trackId: number) => {
     if (!currentEpisode || !artInstance.current) return;
     setActiveTrackId(trackId);
-    
-    // Save current timestamp
+
     const currentTime = Math.floor(artInstance.current.currentTime || 0);
     const newTrackUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${trackId}&ss=${currentTime}`;
 
-    // Reload with the chosen audio track
-    artInstance.current.url = newTrackUrl;
-    artInstance.current.play().catch(() => {});
+    artInstance.current.switchUrl(newTrackUrl).then(() => {
+      artInstance.current.play();
+    }).catch(() => {
+      artInstance.current.url = newTrackUrl;
+      artInstance.current.play();
+    });
   };
 
   if (loading) {
