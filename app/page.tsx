@@ -173,7 +173,32 @@ export default function NetflixAnimeApp() {
     );
   }, [animeList, searchQuery]);
 
-  // Video Player Setup with Audio Switcher
+    // Switch Audio Track helper (called by buttons AND gear settings menu)
+  const switchAudioTrack = (trackId: number) => {
+    if (!currentEpisode || !artInstance.current) return;
+    setActiveTrackId(trackId);
+
+    const art = artInstance.current;
+    const currentTime = art.currentTime || 0;
+    const isPaused = art.video ? art.video.paused : false;
+
+    const newTrackUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${trackId}`;
+
+    art.switchUrl(newTrackUrl).then(() => {
+      art.currentTime = currentTime;
+      if (!isPaused) {
+        art.play();
+      }
+    }).catch(() => {
+      art.url = newTrackUrl;
+      art.currentTime = currentTime;
+      if (!isPaused) {
+        art.play();
+      }
+    });
+  };
+
+  // Video Player Mount & Gear Icon Settings Setup
   useEffect(() => {
     if (currentView !== 'watch' || !currentEpisode || !playerRef.current) return;
 
@@ -183,7 +208,6 @@ export default function NetflixAnimeApp() {
     }
 
     setActiveTrackId(0);
-    const initialUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=0`;
 
     fetch(`${streamServer}/api/tracks/${currentEpisode.msg_id}`)
       .then((res) => res.json())
@@ -192,6 +216,8 @@ export default function NetflixAnimeApp() {
           ? meta.tracks
           : [{ id: 0, title: 'Default Audio' }];
         setAudioTracks(tracks);
+
+        const initialUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=0`;
 
         if (window.Artplayer && playerRef.current) {
           artInstance.current = new window.Artplayer({
@@ -208,11 +234,28 @@ export default function NetflixAnimeApp() {
             fullscreen: true,
             fullscreenWeb: true,
             theme: '#E50914',
+            settings: [
+              {
+                width: 220,
+                html: 'Audio Track',
+                tooltip: tracks[0]?.title || 'Default Audio',
+                selector: tracks.map((t, idx) => ({
+                  default: idx === 0,
+                  html: t.title,
+                  trackId: t.id,
+                })),
+                onSelect: (item: any) => {
+                  switchAudioTrack(item.trackId);
+                  return item.html;
+                },
+              },
+            ],
           });
         }
       })
       .catch(() => {
         setAudioTracks([{ id: 0, title: 'Default Audio' }]);
+        const initialUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=0`;
         if (window.Artplayer && playerRef.current) {
           artInstance.current = new window.Artplayer({
             container: playerRef.current,
@@ -220,7 +263,11 @@ export default function NetflixAnimeApp() {
             type: 'mp4',
             volume: 0.8,
             autoplay: true,
+            setting: true,
+            playbackRate: true,
+            aspectRatio: true,
             fullscreen: true,
+            fullscreenWeb: true,
             theme: '#E50914',
           });
         }
@@ -233,21 +280,6 @@ export default function NetflixAnimeApp() {
       }
     };
   }, [currentView, currentEpisode, streamServer]);
-
-      const handleSwitchAudio = (trackId: number) => {
-    if (!currentEpisode || !artInstance.current) return;
-    setActiveTrackId(trackId);
-
-    const currentTime = Math.floor(artInstance.current.currentTime || 0);
-    const newTrackUrl = `${streamServer}/watch/${currentEpisode.msg_id}?track=${trackId}&ss=${currentTime}`;
-
-    artInstance.current.switchUrl(newTrackUrl).then(() => {
-      artInstance.current.play();
-    }).catch(() => {
-      artInstance.current.url = newTrackUrl;
-      artInstance.current.play();
-    });
-  };
 
   if (loading) {
     return (
@@ -631,7 +663,7 @@ export default function NetflixAnimeApp() {
                   <button
                     key={t.id}
                     className={`audio-track-btn ${activeTrackId === t.id ? 'active' : ''}`}
-                    onClick={() => handleSwitchAudio(t.id)}
+                    onClick={() => switchAudioTrack(t.id)}
                   >
                     🔊 {t.title}
                   </button>
