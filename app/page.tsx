@@ -48,13 +48,15 @@ export default function NetflixAnimeApp() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
+  const [gestureNotice, setGestureNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const playerRef = useRef<HTMLDivElement>(null);
   const artInstance = useRef<any>(null);
   const playbackTimeRef = useRef<number>(0);
   const totalDurationRef = useRef<number>(0);
-  const lastTapTimeRef = useRef<number>(0);
+  const lastTapRef = useRef<{ time: number; side: 'left' | 'right' | 'center' | null }>({ time: 0, side: null });
+  const noticeTimerRef = useRef<any>(null);
 
   const streamServer = (process.env.NEXT_PUBLIC_STREAM_SERVER || 'https://telegram-stream-server-vglf.onrender.com').replace(/\/$/, '');
   const csvUrl = process.env.NEXT_PUBLIC_SHEET_CSV_URL || '';
@@ -88,13 +90,29 @@ export default function NetflixAnimeApp() {
     setShowStatusModal(false);
   };
 
-  // Synchronized Hardware Back Navigation
+  // Fixed in-app view navigation (Point 2: Prevents full page reload on back)
   const navigateTo = (view: 'home' | 'details' | 'watch' | 'mylist', extraState: any = {}, push = true) => {
     setCurrentView(view);
     if (view === 'mylist') setActiveCategory('mylist');
     else if (view === 'home') setActiveCategory('all');
+
     if (push) {
       window.history.pushState({ view, ...extraState }, '', '');
+    }
+  };
+
+  const handleBack = () => {
+    if (currentView === 'watch') {
+      if (artInstance.current) {
+        artInstance.current.destroy(false);
+        artInstance.current = null;
+      }
+      setCurrentView('details');
+    } else if (currentView === 'details' || currentView === 'mylist') {
+      setCurrentView('home');
+      setActiveCategory('all');
+    } else {
+      window.history.back();
     }
   };
 
@@ -269,7 +287,47 @@ export default function NetflixAnimeApp() {
     });
   };
 
-  // Video Player Mount & Gesture Controller
+  const triggerNotice = (text: string) => {
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    setGestureNotice(text);
+    noticeTimerRef.current = setTimeout(() => {
+      setGestureNotice(null);
+    }, 800);
+  };
+
+  // Point 4: Touch Zone Gesture Interceptor (+10s, -10s, Play/Pause)
+  const handlePlayerTap = (side: 'left' | 'right' | 'center') => {
+    const now = Date.now();
+    const isDoubleTap = now - lastTapRef.current.time < 350 && lastTapRef.current.side === side;
+
+    if (isDoubleTap) {
+      const art = artInstance.current;
+      if (!art) return;
+
+      if (side === 'left') {
+        const target = Math.max(0, (art.currentTime || playbackTimeRef.current) - 10);
+        triggerNotice('⏪ 10s');
+        switchAudioTrack(activeTrackId, target);
+      } else if (side === 'right') {
+        const target = Math.min(totalDurationRef.current || 1440, (art.currentTime || playbackTimeRef.current) + 10);
+        triggerNotice('⏩ 10s');
+        switchAudioTrack(activeTrackId, target);
+      } else {
+        if (art.playing) {
+          art.pause();
+          triggerNotice('⏸ Paused');
+        } else {
+          art.play();
+          triggerNotice('▶ Playing');
+        }
+      }
+      lastTapRef.current = { time: 0, side: null };
+    } else {
+      lastTapRef.current = { time: now, side };
+    }
+  };
+
+  // Video Player Mount & Settings Setup
   useEffect(() => {
     if (currentView !== 'watch' || !currentEpisode || !playerRef.current) return;
 
@@ -327,7 +385,6 @@ export default function NetflixAnimeApp() {
             ],
           });
 
-          // Lock Duration on ready
           art.on('ready', () => {
             if (art.video && totalDurationRef.current > 0) {
               Object.defineProperty(art.video, 'duration', {
@@ -337,24 +394,12 @@ export default function NetflixAnimeApp() {
             }
           });
 
-          // Point 4: Auto-rotate to landscape on fullscreen
+          // Auto-rotate to landscape on fullscreen
           art.on('fullscreen', (state: boolean) => {
             if (state && screen.orientation && 'lock' in screen.orientation) {
               (screen.orientation as any).lock('landscape').catch(() => {});
             } else if (!state && screen.orientation && 'unlock' in screen.orientation) {
               screen.orientation.unlock();
-            }
-          });
-
-          // Point 5: Scrubbing/Seek handling without resets
-          let isSeeking = false;
-          art.on('video:seeking', () => {
-            if (!isSeeking && art.currentTime > 0) {
-              isSeeking = true;
-              playbackTimeRef.current = Math.floor(art.currentTime);
-              setTimeout(() => {
-                isSeeking = false;
-              }, 400);
             }
           });
 
@@ -369,42 +414,6 @@ export default function NetflixAnimeApp() {
               playbackTimeRef.current = Math.floor(art.currentTime);
             }
           });
-
-          // Point 6: Mobile Touch Gestures (Double-tap left/center/right)
-          const videoElement = art.template.$video;
-          if (videoElement) {
-            videoElement.addEventListener('touchstart', (e: TouchEvent) => {
-              const now = Date.now();
-              const diff = now - lastTapTimeRef.current;
-              if (diff < 300 && e.touches.length === 1) {
-                const rect = videoElement.getBoundingClientRect();
-                const x = e.touches[0].clientX - rect.left;
-                const width = rect.width;
-
-                if (x < width * 0.35) {
-                  // Double tap left: Rewind 10s
-                  const target = Math.max(0, (art.currentTime || playbackTimeRef.current) - 10);
-                  art.notice.show = '⏪ 10s';
-                  switchAudioTrack(activeTrackId, target);
-                } else if (x > width * 0.65) {
-                  // Double tap right: Forward 10s
-                  const target = Math.min(totalDurationRef.current, (art.currentTime || playbackTimeRef.current) + 10);
-                  art.notice.show = '⏩ 10s';
-                  switchAudioTrack(activeTrackId, target);
-                } else {
-                  // Double tap center: Play / Pause toggle
-                  if (art.playing) {
-                    art.pause();
-                    art.notice.show = '⏸ Paused';
-                  } else {
-                    art.play();
-                    art.notice.show = '▶ Playing';
-                  }
-                }
-              }
-              lastTapTimeRef.current = now;
-            });
-          }
 
           artInstance.current = art;
         }
@@ -448,7 +457,7 @@ export default function NetflixAnimeApp() {
         * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
         body { background-color: #000; overflow-x: hidden; }
 
-        /* HEADER CLEANED (POINT 1) */
+        /* HEADER */
         .netflix-header { position: sticky; top: 0; left: 0; right: 0; z-index: 100; background: #000; padding: 12px 16px 8px; }
         .netflix-top-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
         .netflix-logo { color: #E50914; font-size: 24px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; cursor: pointer; }
@@ -479,24 +488,21 @@ export default function NetflixAnimeApp() {
         .poster-img { width: 100%; aspect-ratio: 2/3; object-fit: cover; display: block; }
         .poster-title { font-size: 11px; font-weight: 600; padding: 6px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-        /* DETAIL SHEET (POINT 2) */
-        .detail-sheet { position: relative; min-height: 100vh; background-color: #000; padding-bottom: 40px; }
-        .sheet-ambient-bg { position: absolute; top: 0; left: 0; right: 0; height: 380px; overflow: hidden; z-index: 1; }
-        .sheet-ambient-img { width: 100%; height: 100%; object-fit: cover; filter: blur(35px) brightness(0.4); transform: scale(1.2); }
+        /* POINT 1: EXTENDED AMBIENT BLURRED BACKGROUND */
+        .detail-sheet { position: relative; min-height: 100vh; background-color: #000; padding-bottom: 40px; overflow: hidden; }
+        .sheet-ambient-bg { position: absolute; top: 0; left: 0; right: 0; height: 600px; overflow: hidden; z-index: 1; pointer-events: none; }
+        .sheet-ambient-img { width: 100%; height: 100%; object-fit: cover; filter: blur(45px) brightness(0.35); transform: scale(1.3); }
+        .ambient-bottom-fade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.85) 70%, #000 100%); }
+
         .close-circle-btn { position: absolute; top: 16px; right: 16px; z-index: 10; width: 32px; height: 32px; border-radius: 50%; background: rgba(30,30,30,0.85); color: #fff; border: none; font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 
         .sheet-content { position: relative; z-index: 2; padding: 30px 18px 0; display: flex; flex-direction: column; align-items: center; }
         .sheet-poster-box { width: 160px; aspect-ratio: 2/3; border-radius: 8px; overflow: hidden; box-shadow: 0 14px 28px rgba(0,0,0,0.9); margin-bottom: 16px; border: 1px solid rgba(255,255,255,0.15); }
         .sheet-poster-box img { width: 100%; height: 100%; object-fit: cover; }
 
-        .rank-tag-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-        .top10-box { background: #E50914; color: #fff; font-size: 9px; font-weight: 900; line-height: 1; padding: 3px 4px; border-radius: 2px; text-align: center; }
-        .rank-text { font-size: 13px; font-weight: 800; color: #fff; }
-
         .play-primary-btn { width: 100%; max-width: 440px; background: #E50914; color: #fff; border: none; padding: 12px; border-radius: 6px; font-size: 15px; font-weight: 800; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; margin-bottom: 14px; }
         .sheet-synopsis { font-size: 12px; line-height: 1.5; color: #ccc; text-align: left; width: 100%; max-width: 440px; margin-bottom: 18px; }
 
-        /* CENTERED MY LIST BUTTON (POINT 2) */
         .mylist-center-action { display: flex; justify-content: center; width: 100%; max-width: 440px; margin-bottom: 24px; }
         .mylist-pill-trigger { display: flex; align-items: center; gap: 8px; background: #1f1f1f; border: 1px solid #333; padding: 8px 24px; border-radius: 24px; color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; }
 
@@ -515,9 +521,16 @@ export default function NetflixAnimeApp() {
         .ep-title-text { font-size: 12px; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .ep-desc-text { font-size: 10px; color: #888; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
-        /* WATCH SCREEN & IN-PLAYER EPISODE LIST (POINT 3) */
+        /* WATCH SCREEN & GESTURE OVERLAY */
         .player-screen { padding: 14px; max-width: 900px; margin: 0 auto; }
-        .player-container { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; margin: 10px 0; }
+        .player-wrapper { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; margin: 10px 0; }
+        .player-container { width: 100%; height: 100%; }
+
+        /* GESTURE TOUCH ZONES (POINT 4) */
+        .gesture-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 75%; display: flex; z-index: 20; pointer-events: auto; }
+        .gesture-zone { flex: 1; height: 100%; }
+        .gesture-notice { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.75); color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 16px; font-weight: bold; pointer-events: none; z-index: 30; }
+
         .watch-ep-section { margin-top: 24px; border-top: 1px solid #222; padding-top: 18px; }
 
         /* MY LIST SCREEN */
@@ -532,7 +545,7 @@ export default function NetflixAnimeApp() {
         .pill-btn { background: #1a1a1a; border: 1px solid #333; color: #bbb; padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer; }
         .pill-btn.active { background: #333; color: #fff; border-color: #555; }
 
-        /* CATEGORY PICKER MODAL (POINT 2) */
+        /* STATUS PICKER MODAL */
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 200; display: flex; align-items: flex-end; justify-content: center; }
         .modal-content { background: #1a1a1a; width: 100%; max-width: 440px; border-radius: 16px 16px 0 0; padding: 20px 18px 30px; border-top: 1px solid #333; }
         .modal-title { font-size: 16px; font-weight: 800; margin-bottom: 16px; text-align: center; }
@@ -542,9 +555,7 @@ export default function NetflixAnimeApp() {
         .modal-cancel-btn { background: none; border: none; color: #888; font-size: 13px; margin-top: 14px; text-align: center; width: 100%; cursor: pointer; }
       `}</style>
 
-      {/* ============================================================ */}
-      {/* 1. HOME SCREEN                                              */}
-      {/* ============================================================ */}
+      {/* 1. HOME SCREEN */}
       {currentView === 'home' && (
         <div>
           <header className="netflix-header">
@@ -645,20 +656,20 @@ export default function NetflixAnimeApp() {
         </div>
       )}
 
-      {/* ============================================================ */}
-      {/* 2. ANIME DETAIL MODAL                                       */}
-      {/* ============================================================ */}
+      {/* 2. ANIME DETAIL MODAL */}
       {currentView === 'details' && activeAnime && (
         <div className="detail-sheet">
+          {/* Extended background covering down past the posters */}
           <div className="sheet-ambient-bg">
             <img
               src={activeAnime.info.banner || activeAnime.info.poster}
               alt=""
               className="sheet-ambient-img"
             />
+            <div className="ambient-bottom-fade" />
           </div>
 
-          <button className="close-circle-btn" onClick={() => window.history.back()}>
+          <button className="close-circle-btn" onClick={handleBack}>
             ✕
           </button>
 
@@ -668,11 +679,6 @@ export default function NetflixAnimeApp() {
                 src={activeAnime.info.poster || activeAnime.info.banner}
                 alt={activeAnime.info.title}
               />
-            </div>
-
-            <div className="rank-tag-row">
-              <div className="top10-box">TOP<br />10</div>
-              <span className="rank-text">#1 in Anime Series Today</span>
             </div>
 
             <button
@@ -691,7 +697,6 @@ export default function NetflixAnimeApp() {
               {activeAnime.info.genres} • Released {activeAnime.info.year} • Rating: ★ {activeAnime.info.rating}.
             </p>
 
-            {/* Centered My List Button with Category Selector */}
             <div className="mylist-center-action">
               <button
                 className="mylist-pill-trigger"
@@ -749,14 +754,12 @@ export default function NetflixAnimeApp() {
         </div>
       )}
 
-      {/* ============================================================ */}
-      {/* 3. DEDICATED MY LIST SCREEN                                 */}
-      {/* ============================================================ */}
+      {/* 3. DEDICATED MY LIST SCREEN */}
       {currentView === 'mylist' && (
         <div className="mylist-screen">
           <div className="mylist-top-bar">
             <div className="mylist-title-row">
-              <button className="back-icon-btn" onClick={() => window.history.back()}>
+              <button className="back-icon-btn" onClick={handleBack}>
                 ←
               </button>
               <h1 className="mylist-heading">My List</h1>
@@ -826,9 +829,7 @@ export default function NetflixAnimeApp() {
         </div>
       )}
 
-      {/* ============================================================ */}
-      {/* 4. WATCH PLAYER SCREEN + IN-PLAYER EPISODES (POINT 3)       */}
-      {/* ============================================================ */}
+      {/* 4. WATCH PLAYER SCREEN */}
       {currentView === 'watch' && currentEpisode && (
         <div className="player-screen">
           <button
@@ -844,13 +845,24 @@ export default function NetflixAnimeApp() {
               alignItems: 'center',
               gap: '6px',
             }}
-            onClick={() => window.history.back()}
+            onClick={handleBack}
           >
             ← Back
           </button>
 
-          <div className="player-container">
-            <div ref={playerRef} style={{ width: '100%', height: '100%' }} />
+          <div className="player-wrapper">
+            <div ref={playerRef} className="player-container" />
+
+            {/* Gesture touch interception overlay */}
+            <div className="gesture-overlay">
+              <div className="gesture-zone" onClick={() => handlePlayerTap('left')} />
+              <div className="gesture-zone" onClick={() => handlePlayerTap('center')} />
+              <div className="gesture-zone" onClick={() => handlePlayerTap('right')} />
+            </div>
+
+            {gestureNotice && (
+              <div className="gesture-notice">{gestureNotice}</div>
+            )}
           </div>
 
           <div style={{ marginTop: '12px' }}>
@@ -865,7 +877,6 @@ export default function NetflixAnimeApp() {
             </p>
           </div>
 
-          {/* Point 3: Episode List directly below the playing video */}
           <div className="watch-ep-section">
             <h3 style={{ fontSize: '15px', fontWeight: 800, marginBottom: '14px' }}>All Episodes</h3>
             <div className="ep-list-container">
@@ -905,9 +916,7 @@ export default function NetflixAnimeApp() {
         </div>
       )}
 
-      {/* ============================================================ */}
-      {/* 5. ADD TO MY LIST STATUS MODAL                               */}
-      {/* ============================================================ */}
+      {/* 5. ADD TO MY LIST STATUS MODAL */}
       {showStatusModal && activeAnime && (
         <div className="modal-overlay" onClick={() => setShowStatusModal(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
